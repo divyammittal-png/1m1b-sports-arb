@@ -1,5 +1,14 @@
 'use strict';
 const https = require('https');
+const fs    = require('fs');
+const path  = require('path');
+
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'betfair-inplay')
+  : path.join(__dirname, 'data');
+
+const CERT_PATH = path.join(DATA_DIR, 'client-2048.crt');
+const KEY_PATH  = path.join(DATA_DIR, 'client-2048.key');
 
 const session = { token: null, loggedInAt: null };
 
@@ -13,25 +22,32 @@ async function login() {
     return false;
   }
 
+  // Load certificate and private key
+  let cert, key;
+  try {
+    cert = fs.readFileSync(CERT_PATH);
+    key  = fs.readFileSync(KEY_PATH);
+    console.log('[AUTH] Certificate loaded from', CERT_PATH);
+  } catch (e) {
+    console.error('[AUTH] Certificate not found:', e.message);
+    console.error('[AUTH] Run: node generate-cert.js');
+    console.error('[AUTH] Then upload client-2048.crt to: https://developer.betfair.com → My API Access → SSL Certificates');
+    return false;
+  }
+
   return new Promise(resolve => {
-    const payload = [
-      `username=${encodeURIComponent(user)}`,
-      `password=${encodeURIComponent(pass)}`,
-      'redirectMethod=POST',
-      'product=home.betfair.com',
-      'website=home.betfair.com',
-      'submitForm=Y',
-    ].join('&');
+    const payload = `username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
 
     const opts = {
-      hostname: 'identitysso.betfair.com',
+      hostname: 'identitysso-cert.betfair.com',
       path:     '/api/login',
       method:   'POST',
+      cert,
+      key,
       headers:  {
         'X-Application':  appKey,
         'Content-Type':   'application/x-www-form-urlencoded',
         'Accept':         'application/json',
-        'User-Agent':     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Content-Length': Buffer.byteLength(payload),
       },
     };
@@ -40,24 +56,27 @@ async function login() {
       let body = '';
       res.on('data', c => body += c);
       res.on('end', () => {
-        console.log(`[AUTH] HTTP ${res.statusCode} from Betfair`);
+        console.log(`[AUTH] HTTP ${res.statusCode} from identitysso-cert.betfair.com`);
         console.log(`[AUTH] Raw response: ${body.slice(0, 500)}`);
         try {
           const j = JSON.parse(body);
-          console.log(`[AUTH] status="${j.status}" error="${j.error || ''}" token=${j.token ? j.token.slice(0,8) + '…' : 'NONE'}`);
+          console.log(`[AUTH] status="${j.status}" error="${j.error || ''}" token=${j.token ? j.token.slice(0, 8) + '…' : 'NONE'}`);
           if (j.status === 'SUCCESS' && j.token) {
             session.token      = j.token;
             session.loggedInAt = Date.now();
-            console.log('[AUTH] Betfair login OK');
+            console.log('[AUTH] Betfair cert login OK');
             resolve(true);
           } else {
             console.error('[AUTH] Login failed — status:', j.status, '| error:', j.error);
-            console.error('[AUTH] Common errors: INVALID_USERNAME_OR_PASSWORD, ACCOUNT_LOCKED, PENDING_AUTH');
+            if (j.error === 'CERTIFICATE_ERROR') {
+              console.error('[AUTH] Certificate not registered — upload client-2048.crt at:');
+              console.error('[AUTH] https://developer.betfair.com → My API Access → SSL Certificates');
+            }
             resolve(false);
           }
         } catch (e) {
           console.error('[AUTH] JSON parse error:', e.message);
-          console.error('[AUTH] Response was not JSON — possible network block or redirect');
+          console.error('[AUTH] Raw body was:', body.slice(0, 300));
           resolve(false);
         }
       });
@@ -73,7 +92,6 @@ async function login() {
 function getToken()   { return session.token; }
 function isLoggedIn() { return !!session.token; }
 
-// Re-authenticate every 8 hours (Betfair sessions expire after ~12h)
 function scheduleRefresh() {
   setInterval(async () => {
     console.log('[AUTH] Session refresh...');
