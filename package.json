@@ -1,13 +1,13 @@
 {
-  "name": "1m1b-sports-arb",
+  "name": "1m1b-betfair-inplay",
   "version": "1.0.0",
-  "description": "1M1B Quant — Sports Arbitrage Bot",
+  "description": "1M1B Quant — Betfair In-Play Paper Trading Bot",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js & node scanner.js"
+    "start": "node server.js & node scanner.js & node scores.js"
   },
   "dependencies": {
-    "express": "^4.22.1"
+    "express": "^4.18.2"
   },
   "engines": {
     "node": ">=18"

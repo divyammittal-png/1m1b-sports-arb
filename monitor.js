@@ -1,103 +1,93 @@
 'use strict';
-const fs = require('fs');
-const { dataPath } = require('./storage');
+const { load, save } = require('./storage');
 
-const F = {
-  state:  dataPath('state.json'),
-  arbs:   dataPath('arbs.json'),
-  trades: dataPath('trades.json'),
-};
+function today()  { return new Date().toISOString().slice(0, 10); }
 
-function loadJSON(f) {
-  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; }
-}
-function saveJSON(f, d) {
-  try { fs.writeFileSync(f, JSON.stringify(d, null, 2)); } catch (e) { console.error('[MON] save error:', e.message); }
+function std(arr) {
+  if (arr.length < 2) return 0;
+  const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
+  const variance = arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length;
+  return Math.sqrt(variance);
 }
 
-function today() { return new Date().toISOString().slice(0, 10); }
-function thisWeekStart() {
-  const d = new Date();
-  d.setDate(d.getDate() - d.getDay());
-  return d.toISOString().slice(0, 10);
-}
+function getStats() {
+  const trades      = load('trades.json') || [];
+  const state       = load('state.json')  || {};
+  const t           = today();
 
-function computeStats() {
-  const arbs   = loadJSON(F.arbs)   || [];
-  const trades = loadJSON(F.trades) || [];
-  const t      = today();
-  const w      = thisWeekStart();
+  const tradesToday = trades.filter(tr => (tr.closedAt || '').slice(0, 10) === t);
+  const totalPnl    = trades.reduce((s, tr) => s + (tr.pnl || 0), 0);
+  const todayPnl    = tradesToday.reduce((s, tr) => s + (tr.pnl || 0), 0);
 
-  const arbsToday  = arbs.filter(a => (a.foundAt || '').slice(0, 10) === t);
-  const arbsWeek   = arbs.filter(a => (a.foundAt || '').slice(0, 10) >= w);
+  const won  = trades.filter(tr => tr.result === 'WIN').length;
+  const lost = trades.filter(tr => tr.result === 'LOSS').length;
+  const winRate = (won + lost) > 0 ? (won / (won + lost)) * 100 : 0;
 
-  const tradesToday = trades.filter(a => (a.placedAt || '').slice(0, 10) === t);
-  const tradesWeek  = trades.filter(a => (a.placedAt || '').slice(0, 10) >= w);
+  const best  = trades.reduce((b, tr) => (tr.pnl || 0) > (b?.pnl || -Infinity) ? tr : b, null);
+  const worst = trades.reduce((w, tr) => (tr.pnl || 0) < (w?.pnl || Infinity)  ? tr : w, null);
 
-  const totalPnl   = trades.reduce((s, t) => s + (t.actualPnl || 0), 0);
-  const todayPnl   = tradesToday.reduce((s, t) => s + (t.actualPnl || 0), 0);
-  const weekPnl    = tradesWeek.reduce((s, t) => s + (t.actualPnl || 0), 0);
+  const avgPnl  = trades.length ? totalPnl / trades.length : 0;
+  const holdTimes = trades.filter(tr => tr.holdTimeSec != null).map(tr => tr.holdTimeSec);
+  const avgHold = holdTimes.length ? holdTimes.reduce((s, v) => s + v, 0) / holdTimes.length : 0;
 
-  const won  = trades.filter(t => t.status === 'WON').length;
-  const lost = trades.filter(t => t.status === 'LOST').length;
-  const winRate = won + lost > 0 ? (won / (won + lost)) * 100 : 100;
-
-  const bestArb = arbs.reduce((best, a) =>
-    (a.netProfitPct || 0) > (best?.netProfitPct || 0) ? a : best, null);
-
-  const avgProfitPct = arbs.length > 0
-    ? arbs.reduce((s, a) => s + (a.netProfitPct || 0), 0) / arbs.length
+  // Sharpe: mean(returns) / std(returns) * sqrt(252) — daily approximation
+  const returns = trades.map(tr => tr.pnl || 0);
+  const sharpe  = std(returns) > 0
+    ? +(avgPnl / std(returns) * Math.sqrt(252)).toFixed(2)
     : 0;
 
-  // Arbs by sport
+  // By sport
   const bySport = {};
-  for (const a of arbs) {
-    bySport[a.sport] = (bySport[a.sport] || 0) + 1;
+  for (const tr of trades) {
+    if (!bySport[tr.sport]) bySport[tr.sport] = { count: 0, pnl: 0, wins: 0 };
+    bySport[tr.sport].count++;
+    bySport[tr.sport].pnl  += tr.pnl || 0;
+    if (tr.result === 'WIN') bySport[tr.sport].wins++;
+  }
+  for (const s of Object.values(bySport)) {
+    s.pnl     = +s.pnl.toFixed(2);
+    s.winRate = s.count > 0 ? +(s.wins / s.count * 100).toFixed(1) : 0;
   }
 
-  // Arbs by bookmaker pair
-  const byPair = {};
-  for (const a of arbs) {
-    if (!a.legs || a.legs.length < 2) continue;
-    const pair = a.legs.slice(0, 2).map(l => l.bookmaker).sort().join(' / ');
-    if (!byPair[pair]) byPair[pair] = { count: 0, totalProfitPct: 0 };
-    byPair[pair].count++;
-    byPair[pair].totalProfitPct += a.netProfitPct || 0;
+  // By event type
+  const byTrigger = {};
+  for (const tr of trades) {
+    const key = tr.trigger?.split(':')[0] || 'Unknown';
+    if (!byTrigger[key]) byTrigger[key] = { count: 0, pnl: 0 };
+    byTrigger[key].count++;
+    byTrigger[key].pnl += tr.pnl || 0;
   }
-  const bookmakerPairs = Object.entries(byPair)
-    .map(([pair, d]) => ({ pair, count: d.count, avgProfitPct: +(d.totalProfitPct / d.count).toFixed(3) }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 10);
+  for (const s of Object.values(byTrigger)) s.pnl = +s.pnl.toFixed(2);
 
   return {
-    arbsFoundToday:  arbsToday.length,
-    arbsFoundWeek:   arbsWeek.length,
-    arbsFoundTotal:  arbs.length,
-    tradesTotal:     trades.length,
-    tradesToday:     tradesToday.length,
-    winRate:         +winRate.toFixed(1),
-    totalPnl:        +totalPnl.toFixed(2),
-    todayPnl:        +todayPnl.toFixed(2),
-    weekPnl:         +weekPnl.toFixed(2),
-    bestArb:         bestArb ? { event: bestArb.event, sport: bestArb.sport, netProfitPct: bestArb.netProfitPct, foundAt: bestArb.foundAt } : null,
-    avgProfitPct:    +avgProfitPct.toFixed(4),
+    bankroll:       state.bankroll ?? 1000,
+    totalPnl:       +totalPnl.toFixed(2),
+    todayPnl:       +todayPnl.toFixed(2),
+    tradesTotal:    trades.length,
+    tradesToday:    tradesToday.length,
+    winRate:        +winRate.toFixed(1),
+    avgPnlPerTrade: +avgPnl.toFixed(2),
+    avgHoldSec:     +avgHold.toFixed(1),
+    sharpe,
+    best:  best  ? { event: best.eventName,  pnl: best.pnl,  trigger: best.trigger }  : null,
+    worst: worst ? { event: worst.eventName, pnl: worst.pnl, trigger: worst.trigger } : null,
     bySport,
-    bookmakerPairs,
+    byTrigger,
+    lastScanAt:    state.lastScanAt,
+    bankrollHistory: (state.bankrollHistory || []).slice(-200),
+    updatedAt: new Date().toISOString(),
   };
 }
 
-// Called by scanner after each scan cycle
-function update(scanMeta) {
-  const state = loadJSON(F.state) || {};
-  const stats = computeStats();
-  saveJSON(F.state, { ...state, ...scanMeta, ...stats, updatedAt: new Date().toISOString() });
-}
+// Persist stats snapshot every 60s
+setInterval(() => {
+  try {
+    const stats = getStats();
+    const state = load('state.json') || {};
+    save('state.json', { ...state, ...stats });
+  } catch (e) {
+    console.error('[MON] Stats error:', e.message);
+  }
+}, 60_000);
 
-// Called by server to get a fresh stats snapshot
-function getStats() {
-  const state = loadJSON(F.state) || {};
-  const stats = computeStats();
-  return { ...state, ...stats };
-}
-
-module.exports = { update, getStats };
+module.exports = { getStats };

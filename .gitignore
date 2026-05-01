@@ -2,9 +2,11 @@ node_modules/
 *.log
 .env
 
-# Runtime data files
+# Runtime data
 data/
-arbs.json
-trades.json
 state.json
-bankroll.json
+trades.json
+markets.json
+events.json
+opportunities.json
+positions.json

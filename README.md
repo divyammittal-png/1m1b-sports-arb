@@ -1,1 +1,1 @@
-1M1B Quant — Sports Arbitrage Bot
+1M1B Quant — Betfair In-Play Trading Bot

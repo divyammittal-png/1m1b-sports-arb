@@ -1,225 +1,248 @@
 'use strict';
+// Main trading process.
+// Loop A (30s): listMarketCatalogue — find all in-play MATCH_ODDS markets.
+// Loop B (2s):  listMarketBook     — fetch best back/lay odds for each market.
+// After each Loop B: run detector against unprocessed score events,
+// then hand any opportunities to executor.
+//
+// NOTE: BETFAIR_APP_KEY=sUGRnGHfDkovos55 is a Delay key — market data
+// arrives 60 seconds late. Opportunities will be rare; swap to a real
+// Stream API key for production.
+
 const https    = require('https');
-const fs       = require('fs');
-const { dataPath } = require('./storage');
-const { findBestArb } = require('./arb');
+const auth     = require('./auth');
+const { detectOpportunities } = require('./detector');
 const executor = require('./executor');
-const monitor  = require('./monitor');
-const alerts   = require('./alerts');
+const { load, save } = require('./storage');
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const ODDS_API_KEY   = process.env.ODDS_API_KEY || '';
-const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL_MS || '300000', 10); // 5 min default (free tier: 500 req/month)
-const MIN_PROFIT_PCT = parseFloat(process.env.MIN_PROFIT_PCT || '0.5');
-const ALERT_THRESHOLD = parseFloat(process.env.ALERT_PROFIT_PCT || '1.0');
-const PAPER_MODE     = process.env.PAPER_MODE !== 'false';
+const APP_KEY       = process.env.BETFAIR_APP_KEY || '';
+const CATALOGUE_MS  = parseInt(process.env.CATALOGUE_MS  || '30000', 10);
+const ODDS_MS       = parseInt(process.env.ODDS_MS        || '2000',  10);
 
-// Sports scanned in priority order — each costs 1 API credit
-const SPORT_KEYS = [
-  'soccer_epl',
-  'soccer_spain_la_liga',
-  'soccer_uefa_champs_league',
-  'soccer_uefa_europa_league',
-  'tennis_atp',
-  'tennis_wta',
-  'basketball_nba',
-  'basketball_euroleague',
-  'cricket_test_match',
-];
+// In-memory market state (shared with detector/executor in same process)
+const markets = [];  // array of enriched market objects
 
-// ── File paths ────────────────────────────────────────────────────────────────
-const F = {
-  arbs:  dataPath('arbs.json'),
-  state: dataPath('state.json'),
-};
-
-let requestsRemaining = 500;
-let requestsUsed      = 0;
-let lastScanAt        = null;
-let scanCount         = 0;
-
-// ── JSON helpers ──────────────────────────────────────────────────────────────
-function loadJSON(f) {
-  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; }
-}
-function saveJSON(f, d) {
-  try { fs.writeFileSync(f, JSON.stringify(d, null, 2)); } catch (e) { console.error('[SCAN] save error:', e.message); }
-}
-
-// ── HTTP helper ───────────────────────────────────────────────────────────────
-function httpsGet(url) {
+// ── Betfair API helper ────────────────────────────────────────────────────────
+function betfairPost(endpoint, body) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
-      // Capture remaining quota from headers
-      if (res.headers['x-requests-remaining']) requestsRemaining = parseInt(res.headers['x-requests-remaining'], 10);
-      if (res.headers['x-requests-used'])      requestsUsed      = parseInt(res.headers['x-requests-used'], 10);
+    const token = auth.getToken();
+    if (!token) return reject(new Error('Not logged in'));
 
-      let body = '';
-      res.on('data', c => body += c);
-      res.on('end', () => {
-        if (res.statusCode === 401) return reject(new Error('HTTP 401 — check ODDS_API_KEY'));
-        if (res.statusCode === 422) return reject(new Error('HTTP 422 — sport not in season'));
-        if (res.statusCode === 429) return reject(new Error('HTTP 429 — quota exhausted'));
-        if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
-        try { resolve(JSON.parse(body)); } catch { reject(new Error('Invalid JSON')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
-  });
-}
-
-// ── Odds API fetch ────────────────────────────────────────────────────────────
-async function fetchOdds(sportKey) {
-  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds?apiKey=${ODDS_API_KEY}&regions=uk,eu&markets=h2h&oddsFormat=decimal`;
-  return httpsGet(url);
-}
-
-// ── Betfair (optional) ────────────────────────────────────────────────────────
-// Betfair requires session login; results are merged with Odds API data.
-// Fill in placeBet() in executor.js to go live.
-let betfairSession = null;
-
-async function betfairLogin() {
-  const user = process.env.BETFAIR_USERNAME;
-  const pass = process.env.BETFAIR_PASSWORD;
-  const key  = process.env.BETFAIR_APP_KEY;
-  if (!user || !pass || !key) return;
-
-  return new Promise((resolve) => {
-    const payload = `username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
+    const payload = JSON.stringify(body);
     const opts = {
-      hostname: 'identitysso.betfair.com',
-      path:     '/api/login',
+      hostname: 'api.betfair.com',
+      path:     `/exchange/betting/rest/v1.0/${endpoint}`,
       method:   'POST',
       headers:  {
-        'X-Application':  key,
-        'Content-Type':   'application/x-www-form-urlencoded',
+        'X-Application':  APP_KEY,
+        'X-Authentication': token,
+        'Content-Type':   'application/json',
         'Accept':         'application/json',
         'Content-Length': Buffer.byteLength(payload),
       },
     };
+
     const req = https.request(opts, res => {
-      let body = '';
-      res.on('data', c => body += c);
+      let data = '';
+      res.on('data', c => data += c);
       res.on('end', () => {
-        try {
-          const j = JSON.parse(body);
-          if (j.status === 'SUCCESS') {
-            betfairSession = { token: j.token, key, loggedInAt: Date.now() };
-            console.log('[BETFAIR] Logged in');
-          } else {
-            console.warn('[BETFAIR] Login failed:', j.error);
-          }
-        } catch { console.warn('[BETFAIR] Login parse error'); }
-        resolve();
+        if (res.statusCode === 401) return reject(new Error('BF-401: session expired'));
+        if (res.statusCode >= 400)  return reject(new Error(`BF-HTTP-${res.statusCode}`));
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error('BF JSON parse error')); }
       });
     });
-    req.on('error', e => { console.warn('[BETFAIR] Login error:', e.message); resolve(); });
+
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('BF Timeout')); });
     req.write(payload);
     req.end();
   });
 }
 
-// Refresh Betfair session every 4 hours
-function scheduleBetfairRefresh() {
-  setInterval(betfairLogin, 4 * 3600_000);
-}
-
-// ── Arb tracking ──────────────────────────────────────────────────────────────
-function loadArbs()      { return loadJSON(F.arbs) || []; }
-function saveArbs(arbs)  { saveJSON(F.arbs, arbs); }
-
-// Expire arbs whose event has started
-function expireArbs(arbs) {
-  const now = Date.now();
-  return arbs.map(a => {
-    if (a.status === 'OPEN' && new Date(a.commenceTime).getTime() < now) {
-      return { ...a, status: 'EXPIRED' };
-    }
-    return a;
-  });
-}
-
-function isDuplicate(arbs, newArb) {
-  return arbs.some(a => a.eventId === newArb.eventId && a.status === 'OPEN');
-}
-
-// ── Main scan ─────────────────────────────────────────────────────────────────
-async function scanSport(sportKey) {
-  let events;
+// ── Loop A: fetch in-play market catalogue ────────────────────────────────────
+async function refreshCatalogue() {
+  let catalogue;
   try {
-    events = await fetchOdds(sportKey);
+    catalogue = await betfairPost('listMarketCatalogue/', {
+      filter: {
+        inPlayOnly:       true,
+        marketTypeCodes:  ['MATCH_ODDS'],
+      },
+      marketProjection: ['EVENT', 'MARKET_START_TIME', 'RUNNER_DESCRIPTION'],
+      sort:             'FIRST_TO_START',
+      maxResults:       '50',
+    });
   } catch (e) {
-    if (e.message.includes('422')) return 0; // sport out of season — silent skip
-    console.warn(`[SCAN] ${sportKey}: ${e.message}`);
-    return 0;
+    console.warn('[SCAN] Catalogue error:', e.message);
+    if (e.message.includes('401')) await auth.login();
+    return;
   }
 
-  if (!Array.isArray(events)) return 0;
+  if (!Array.isArray(catalogue)) return;
 
-  let found = 0;
-  let arbs  = loadArbs();
-  arbs      = expireArbs(arbs);
-
-  for (const event of events) {
-    const arb = findBestArb(event, { minNetProfitPct: MIN_PROFIT_PCT });
-    if (!arb) continue;
-    if (isDuplicate(arbs, arb)) continue;
-
-    console.log(`[ARB] ${arb.event} | ${arb.sport} | +${arb.netProfitPct.toFixed(2)}% net`);
-
-    arbs.unshift(arb);
-    found++;
-
-    // Paper-trade it
-    if (PAPER_MODE) {
-      executor.executePaper(arb);
-    }
-
-    // Alert if above threshold
-    if (arb.netProfitPct >= ALERT_THRESHOLD) {
-      alerts.sendArbAlert(arb).catch(e => console.warn('[ALERT]', e.message));
-    }
+  // Merge new markets into state — keep existing + add new
+  const existingIds = new Set(markets.map(m => m.marketId));
+  let added = 0;
+  for (const m of catalogue) {
+    if (existingIds.has(m.marketId)) continue;
+    markets.push({
+      marketId:   m.marketId,
+      eventName:  m.event?.name || m.marketName,
+      sport:      guessSport(m),
+      startTime:  m.marketStartTime,
+      runners:    (m.runners || []).map(r => ({
+        selectionId: r.selectionId,
+        runnerName:  r.runnerName,
+        backOdds:    null,
+        layOdds:     null,
+      })),
+      oddsHistory: [],
+      status:     'LIVE',
+      lastUpdated: null,
+    });
+    added++;
   }
 
-  if (found) saveArbs(arbs.slice(0, 500));
-  return found;
+  // Remove markets no longer in catalogue
+  const liveIds = new Set(catalogue.map(m => m.marketId));
+  for (let i = markets.length - 1; i >= 0; i--) {
+    if (!liveIds.has(markets[i].marketId)) markets.splice(i, 1);
+  }
+
+  if (added) console.log(`[SCAN] Catalogue: ${markets.length} live markets (+${added} new)`);
+  saveMarketsFile();
 }
 
-async function runScan() {
-  if (!ODDS_API_KEY) {
-    console.error('[SCAN] ODDS_API_KEY not set — set it in Railway environment variables');
+function guessSport(m) {
+  const name = (m.event?.name || m.marketName || '').toLowerCase();
+  if (name.includes('tennis')) return 'Tennis';
+  if (name.includes('cricket')) return 'Cricket';
+  if (name.includes('basketball')) return 'Basketball';
+  return 'Football';
+}
+
+// ── Loop B: fetch odds + run detector ────────────────────────────────────────
+async function refreshOdds() {
+  if (markets.length === 0) return;
+
+  // Betfair allows up to 40 market IDs per request
+  const ids = markets.map(m => m.marketId).slice(0, 40);
+
+  let books;
+  try {
+    books = await betfairPost('listMarketBook/', {
+      marketIds:       ids,
+      priceProjection: {
+        priceData:              ['EX_BEST_OFFERS'],
+        exBestOffersOverrides:  { bestPricesDepth: 3 },
+      },
+    });
+  } catch (e) {
+    console.warn('[SCAN] Odds error:', e.message);
+    if (e.message.includes('401')) await auth.login();
     return;
   }
-  if (requestsRemaining < 5) {
-    console.warn(`[SCAN] Quota nearly exhausted (${requestsRemaining} remaining) — skipping scan`);
-    return;
+
+  if (!Array.isArray(books)) return;
+
+  const now = new Date().toISOString();
+
+  for (const book of books) {
+    const market = markets.find(m => m.marketId === book.id);
+    if (!market) continue;
+
+    market.status      = book.status;
+    market.inPlay      = book.inplay;
+    market.lastUpdated = now;
+
+    for (const bkRunner of (book.runners || [])) {
+      const runner = market.runners.find(r => r.selectionId === bkRunner.selectionId);
+      if (!runner) continue;
+
+      runner.status   = bkRunner.status;
+      runner.backOdds = bkRunner.ex?.availableToBack?.[0]?.price ?? null;
+      runner.layOdds  = bkRunner.ex?.availableToLay?.[0]?.price  ?? null;
+    }
+
+    // Keep last 60s of odds snapshots (30 entries at 2s interval)
+    market.oddsHistory.push({ ts: now, runners: market.runners.map(r => ({ id: r.selectionId, b: r.backOdds, l: r.layOdds })) });
+    if (market.oddsHistory.length > 30) market.oddsHistory.shift();
+
+    // Update executor's latest odds
+    executor.updateMarketOdds(market.marketId, market.runners.filter(r => r.backOdds));
   }
 
-  scanCount++;
-  lastScanAt = new Date().toISOString();
-  console.log(`[SCAN] #${scanCount} | quota: ${requestsRemaining} remaining`);
+  saveMarketsFile();
+  runDetector();
+}
 
-  let totalFound = 0;
-  for (const sport of SPORT_KEYS) {
-    totalFound += await scanSport(sport);
+// ── Detector integration ──────────────────────────────────────────────────────
+const processedEventIds = new Set();
+
+function runDetector() {
+  const events = load('events.json') || [];
+  const fresh  = events.filter(e => !e.processed && !processedEventIds.has(e.id));
+  if (fresh.length === 0) return;
+
+  const opportunities = load('opportunities.json') || [];
+
+  for (const event of fresh) {
+    processedEventIds.add(event.id);
+
+    const found = detectOpportunities(markets, event);
+    for (const opp of found) {
+      console.log(`[DETECT] ${opp.eventType} opportunity: ${opp.runnerName} @ ${opp.currentOdds} → target ${opp.targetLayOdds} | edge ${opp.edgePct}%`);
+      opportunities.unshift(opp);
+      executor.openPosition(opp);
+    }
+
+    // Mark event processed in file
+    event.processed = true;
   }
 
-  monitor.update({ lastScanAt, scanCount, requestsRemaining, requestsUsed, arbsFoundScan: totalFound });
-  console.log(`[SCAN] Done — ${totalFound} new arb(s) found`);
+  save('events.json', events);
+  save('opportunities.json', opportunities.slice(0, 200));
+}
+
+// ── Persist markets to file (for server.js to read) ──────────────────────────
+function saveMarketsFile() {
+  save('markets.json', markets.map(m => ({
+    marketId:   m.marketId,
+    eventName:  m.eventName,
+    sport:      m.sport,
+    status:     m.status,
+    inPlay:     m.inPlay,
+    lastUpdated: m.lastUpdated,
+    runners:    m.runners.map(r => ({
+      selectionId: r.selectionId,
+      runnerName:  r.runnerName,
+      backOdds:    r.backOdds,
+      layOdds:     r.layOdds,
+    })),
+  })));
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 async function start() {
-  console.log(`[SCAN] Starting — interval ${SCAN_INTERVAL / 1000}s | paper=${PAPER_MODE}`);
+  console.log('[SCAN] Starting — Betfair in-play scanner');
+  console.log(`[SCAN] App key: ${APP_KEY ? APP_KEY.slice(0,4) + '...' : 'NOT SET'}`);
 
-  await betfairLogin();
-  scheduleBetfairRefresh();
+  const ok = await auth.login();
+  if (!ok) {
+    console.error('[SCAN] Login failed — retrying in 30s');
+    setTimeout(start, 30_000);
+    return;
+  }
+  auth.scheduleRefresh();
 
-  // Run immediately, then on interval
-  await runScan();
-  setInterval(runScan, SCAN_INTERVAL);
+  await refreshCatalogue();
+  setInterval(refreshCatalogue, CATALOGUE_MS);
+
+  await refreshOdds();
+  setInterval(refreshOdds, ODDS_MS);
+
+  console.log(`[SCAN] Running — catalogue every ${CATALOGUE_MS/1000}s | odds every ${ODDS_MS/1000}s`);
 }
 
 start().catch(e => { console.error('[SCAN] Fatal:', e.message); process.exit(1); });
