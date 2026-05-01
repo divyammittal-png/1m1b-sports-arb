@@ -1,0 +1,15 @@
+{
+  "name": "1m1b-sports-arb",
+  "version": "1.0.0",
+  "description": "1M1B Quant — Sports Arbitrage Bot",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js & node scanner.js"
+  },
+  "dependencies": {
+    "express": "^4.22.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
