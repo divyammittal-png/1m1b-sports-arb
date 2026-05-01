@@ -14,7 +14,15 @@ async function login() {
   }
 
   return new Promise(resolve => {
-    const payload = `username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
+    const payload = [
+      `username=${encodeURIComponent(user)}`,
+      `password=${encodeURIComponent(pass)}`,
+      'redirectMethod=POST',
+      'product=home.betfair.com',
+      'website=home.betfair.com',
+      'submitForm=Y',
+    ].join('&');
+
     const opts = {
       hostname: 'identitysso.betfair.com',
       path:     '/api/login',
@@ -23,6 +31,7 @@ async function login() {
         'X-Application':  appKey,
         'Content-Type':   'application/x-www-form-urlencoded',
         'Accept':         'application/json',
+        'User-Agent':     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Content-Length': Buffer.byteLength(payload),
       },
     };
