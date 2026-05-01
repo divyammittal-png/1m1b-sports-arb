@@ -1,169 +1,151 @@
 'use strict';
-// Live score feed — polls SofaScore every 5 seconds.
+// Live score feed — polls The Odds API scores endpoint.
 // Writes events.json so scanner.js can match events to Betfair markets.
-// NOTE: SofaScore is a public API. If it blocks server-side requests,
-// set SCORES_DISABLED=true and feed events manually via /api/inject-event.
+// Free tier: 500 req/month. Default poll: every 5 minutes per sport key.
+// Override with SCORES_POLL_MS env var.
 
 const https  = require('https');
 const { load, save } = require('./storage');
 
-const POLL_MS = parseInt(process.env.SCORES_POLL_MS || '5000', 10);
-const DISABLED = process.env.SCORES_DISABLED === 'true';
+const ODDS_API_KEY  = process.env.ODDS_API_KEY || 'b88ef03b398dd998a6b6bfdac976a7d2';
+const POLL_MS       = parseInt(process.env.SCORES_POLL_MS || '300000', 10); // 5 min default
+const DISABLED      = process.env.SCORES_DISABLED === 'true';
 
-// Previous score snapshot per match id
+// Soccer sport keys to monitor (one API call each per poll cycle)
+const SOCCER_KEYS = [
+  'soccer_epl',
+  'soccer_spain_la_liga',
+  'soccer_germany_bundesliga',
+  'soccer_uefa_champs_league',
+];
+
+// Previous score snapshot per event id
 const prevScores = {};
-// Track events we have already emitted (by composite key) to avoid duplicates
+// Dedup emitted events
 const emittedKeys = new Set();
 
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+let requestsRemaining = null;
 
+// ── HTTP helper ───────────────────────────────────────────────────────────────
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
-    const opts = {
-      method: 'GET',
-      headers: {
-        'User-Agent': UA,
-        'Referer':    'https://www.sofascore.com/',
-        'Accept':     'application/json',
-      },
-    };
-    const req = https.get(url, opts, res => {
+    const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+      if (res.headers['x-requests-remaining']) {
+        requestsRemaining = parseInt(res.headers['x-requests-remaining'], 10);
+      }
       let body = '';
       res.on('data', c => body += c);
       res.on('end', () => {
+        if (res.statusCode === 401) return reject(new Error('HTTP 401 — check ODDS_API_KEY'));
+        if (res.statusCode === 422) return reject(new Error('HTTP 422 — sport key not in season'));
+        if (res.statusCode === 429) return reject(new Error('HTTP 429 — quota exhausted'));
         if (res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
         try { resolve(JSON.parse(body)); } catch { reject(new Error('Invalid JSON')); }
       });
     });
     req.on('error', reject);
-    req.setTimeout(8000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
   });
 }
 
-// ── Event detection helpers ───────────────────────────────────────────────────
+// ── Goal detection ────────────────────────────────────────────────────────────
+// The Odds API scores response:
+// { id, sport_key, home_team, away_team, completed, scores: [{name, score}], last_update }
 
-function detectFootballEvents(event) {
-  const id   = String(event.id);
-  const home = event.homeTeam?.name || 'Home';
-  const away = event.awayTeam?.name || 'Away';
-  const hScore = event.homeScore?.current ?? 0;
-  const aScore = event.awayScore?.current ?? 0;
-  const minute = event.time?.played ?? 0;
-  const prev   = prevScores[id] || { hScore: 0, aScore: 0 };
+function detectGoals(event) {
+  if (!event.scores || event.completed) return [];
 
-  const events = [];
+  const id       = event.id;
+  const homeTeam = event.home_team;
+  const awayTeam = event.away_team;
 
-  if (hScore > prev.hScore) {
-    events.push({
+  const homeEntry = event.scores.find(s => s.name === homeTeam);
+  const awayEntry = event.scores.find(s => s.name === awayTeam);
+
+  const homeScore = parseInt(homeEntry?.score ?? '0', 10);
+  const awayScore = parseInt(awayEntry?.score ?? '0', 10);
+
+  const prev = prevScores[id] || { homeScore: 0, awayScore: 0 };
+  const detected = [];
+
+  if (homeScore > prev.homeScore) {
+    detected.push({
       type: 'GOAL', sport: 'football', scoringTeam: 'home',
-      homeTeam: home, awayTeam: away,
-      homeScore: hScore, awayScore: aScore, minute,
+      homeTeam, awayTeam, homeScore, awayScore, minute: null,
     });
   }
-  if (aScore > prev.aScore) {
-    events.push({
+  if (awayScore > prev.awayScore) {
+    detected.push({
       type: 'GOAL', sport: 'football', scoringTeam: 'away',
-      homeTeam: home, awayTeam: away,
-      homeScore: hScore, awayScore: aScore, minute,
+      homeTeam, awayTeam, homeScore, awayScore, minute: null,
     });
   }
 
-  prevScores[id] = { hScore, aScore };
-  return events;
+  prevScores[id] = { homeScore, awayScore };
+  return detected;
 }
 
-function detectTennisEvents(event) {
-  const id     = String(event.id);
-  const home   = event.homeTeam?.name || 'Home';
-  const away   = event.awayTeam?.name || 'Away';
-  const hSets  = event.homeScore?.current ?? 0;
-  const aSets  = event.awayScore?.current ?? 0;
-  // Period scores tell us individual sets
-  const prev   = prevScores[id] || { hSets: 0, aSets: 0, hGames: 0, aGames: 0 };
-
-  // Count total games from period scores
-  const hGames = ['period1','period2','period3','period4','period5']
-    .reduce((s, p) => s + (event.homeScore?.[p] ?? 0), 0);
-  const aGames = ['period1','period2','period3','period4','period5']
-    .reduce((s, p) => s + (event.awayScore?.[p] ?? 0), 0);
-
-  const events = [];
-
-  if (hSets > prev.hSets) {
-    events.push({ type: 'SET_WON', sport: 'tennis', winner: 'home', homeTeam: home, awayTeam: away, hSets, aSets });
-  }
-  if (aSets > prev.aSets) {
-    events.push({ type: 'SET_WON', sport: 'tennis', winner: 'away', homeTeam: home, awayTeam: away, hSets, aSets });
-  }
-  if (hGames > prev.hGames && hSets === prev.hSets) {
-    events.push({ type: 'GAME_WON', sport: 'tennis', winner: 'home', homeTeam: home, awayTeam: away, hSets, aSets });
-  }
-  if (aGames > prev.aGames && aSets === prev.aSets) {
-    events.push({ type: 'GAME_WON', sport: 'tennis', winner: 'away', homeTeam: home, awayTeam: away, hSets, aSets });
-  }
-
-  prevScores[id] = { hSets, aSets, hGames, aGames };
-  return events;
-}
-
-// ── Main poll ─────────────────────────────────────────────────────────────────
-
-async function pollSport(sport) {
-  const url = `https://api.sofascore.com/api/v1/sport/${sport}/events/live`;
-  let data;
+// ── Poll one soccer sport key ─────────────────────────────────────────────────
+async function pollSportKey(sportKey) {
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/scores/?apiKey=${ODDS_API_KEY}&daysFrom=1`;
+  let events;
   try {
-    data = await httpsGet(url);
+    events = await httpsGet(url);
   } catch (e) {
-    console.warn(`[SCORES] ${sport} poll error: ${e.message}`);
+    if (e.message.includes('422')) return []; // not in season — silent skip
+    console.warn(`[SCORES] ${sportKey} error: ${e.message}`);
     return [];
   }
 
-  const liveEvents = data?.events || [];
-  const detected   = [];
+  if (!Array.isArray(events)) return [];
 
-  for (const ev of liveEvents) {
-    const raw = sport === 'football'
-      ? detectFootballEvents(ev)
-      : detectTennisEvents(ev);
+  // Only live events (not completed, has scores)
+  const live = events.filter(e => !e.completed && e.scores);
+  const detected = [];
 
-    for (const r of raw) {
-      const key = `${sport}-${ev.id}-${r.type}-${r.homeScore ?? r.hSets ?? 0}-${r.awayScore ?? r.aSets ?? 0}`;
+  for (const ev of live) {
+    const goals = detectGoals(ev);
+    for (const g of goals) {
+      const key = `${sportKey}-${ev.id}-${g.type}-${g.homeScore}-${g.awayScore}`;
       if (emittedKeys.has(key)) continue;
       emittedKeys.add(key);
-      if (emittedKeys.size > 5000) {
-        const first = emittedKeys.values().next().value;
-        emittedKeys.delete(first);
-      }
-      detected.push({ id: `${sport}-${ev.id}-${Date.now()}`, ...r, detectedAt: new Date().toISOString(), processed: false });
+      if (emittedKeys.size > 5000) emittedKeys.delete(emittedKeys.values().next().value);
+      detected.push({ id: `football-${ev.id}-${Date.now()}`, sportKey, ...g, detectedAt: new Date().toISOString(), processed: false });
     }
   }
 
   return detected;
 }
 
+// ── Main poll ─────────────────────────────────────────────────────────────────
 async function poll() {
-  const [football, tennis] = await Promise.all([
-    pollSport('football'),
-    pollSport('tennis'),
-  ]);
+  if (requestsRemaining != null && requestsRemaining < 5) {
+    console.warn(`[SCORES] Quota nearly exhausted (${requestsRemaining} remaining) — skipping poll`);
+    return;
+  }
 
-  const newEvents = [...football, ...tennis];
-  if (newEvents.length === 0) return;
+  const results = [];
+  for (const key of SOCCER_KEYS) {
+    const goals = await pollSportKey(key);
+    results.push(...goals);
+  }
+
+  const quotaStr = requestsRemaining != null ? ` | quota: ${requestsRemaining} remaining` : '';
+  console.log(`[SCORES] Poll complete — ${SOCCER_KEYS.length} keys, ${results.length} new event(s)${quotaStr}`);
+
+  if (results.length === 0) return;
 
   const existing = (load('events.json') || []).filter(e => !e.processed);
-  const merged   = [...newEvents, ...existing].slice(0, 200);
-  save('events.json', merged);
+  save('events.json', [...results, ...existing].slice(0, 200));
 
-  for (const e of newEvents) {
-    console.log(`[SCORES] ${e.sport.toUpperCase()} ${e.type}: ${e.homeTeam} vs ${e.awayTeam}` +
-      (e.homeScore != null ? ` [${e.homeScore}-${e.awayScore}]` : '') +
-      (e.minute ? ` ${e.minute}'` : ''));
+  for (const e of results) {
+    console.log(`[SCORES] GOAL: ${e.homeTeam} vs ${e.awayTeam} [${e.homeScore}-${e.awayScore}] — scored by ${e.scoringTeam}`);
   }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 if (!DISABLED) {
-  console.log(`[SCORES] Starting — polling every ${POLL_MS / 1000}s`);
+  console.log(`[SCORES] Starting — Odds API scores, polling every ${POLL_MS / 1000}s`);
   poll();
   setInterval(poll, POLL_MS);
 } else {

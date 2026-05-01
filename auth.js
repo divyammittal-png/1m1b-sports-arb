@@ -31,19 +31,24 @@ async function login() {
       let body = '';
       res.on('data', c => body += c);
       res.on('end', () => {
+        console.log(`[AUTH] HTTP ${res.statusCode} from Betfair`);
+        console.log(`[AUTH] Raw response: ${body.slice(0, 500)}`);
         try {
           const j = JSON.parse(body);
+          console.log(`[AUTH] status="${j.status}" error="${j.error || ''}" token=${j.token ? j.token.slice(0,8) + '…' : 'NONE'}`);
           if (j.status === 'SUCCESS' && j.token) {
             session.token      = j.token;
             session.loggedInAt = Date.now();
             console.log('[AUTH] Betfair login OK');
             resolve(true);
           } else {
-            console.error('[AUTH] Login failed:', j.error || j.status);
+            console.error('[AUTH] Login failed — status:', j.status, '| error:', j.error);
+            console.error('[AUTH] Common errors: INVALID_USERNAME_OR_PASSWORD, ACCOUNT_LOCKED, PENDING_AUTH');
             resolve(false);
           }
         } catch (e) {
-          console.error('[AUTH] Parse error:', e.message, '| body:', body.slice(0, 200));
+          console.error('[AUTH] JSON parse error:', e.message);
+          console.error('[AUTH] Response was not JSON — possible network block or redirect');
           resolve(false);
         }
       });
