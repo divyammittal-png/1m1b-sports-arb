@@ -36,7 +36,7 @@ async function login() {
 
     const opts = {
       hostname: 'identitysso-cert.betfair.com',
-      path:     '/api/login',
+      path:     '/api/certlogin',
       method:   'POST',
       cert,
       key,
