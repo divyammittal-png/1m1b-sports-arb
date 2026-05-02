@@ -3,12 +3,8 @@ const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
 
-const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
-  ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'betfair-inplay')
-  : path.join(__dirname, 'data');
-
-const CERT_PATH = path.join(DATA_DIR, 'client-2048.crt');
-const KEY_PATH  = path.join(DATA_DIR, 'client-2048.key');
+const CERT_PATH = path.join(__dirname, 'client-2048.crt');
+const KEY_PATH  = path.join(__dirname, 'client-2048.key');
 
 const session = { token: null, loggedInAt: null };
 
