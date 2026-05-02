@@ -10,9 +10,37 @@ function norm(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+// Club-type tokens and connectors that carry no identifying information.
+// Pure numbers (e.g. '04', '1899') are also stripped via the /^\d+$/ test below.
+const NOISE_WORDS = new Set([
+  'v', 'vs', 'fc', 'afc', 'sc', 'ac', 'rc', 'cf', 'bk', 'fk',
+  'if', 'ik', 'sk', 'sad', 'srl', 'spa', 'bc', 'hfc', 'rfc',
+]);
+
+// Returns the meaningful word tokens of a team name after stripping noise.
+// e.g. "Bayer 04 Leverkusen" → ["bayer", "leverkusen"]
+//      "RB Leipzig"          → ["rb", "leipzig"]
+//      "AVS - Futebol SAD"   → ["avs", "futebol"]
+function significantWords(teamName) {
+  return teamName
+    .split(/[\s\-\/]+/)
+    .map(w => norm(w))
+    .filter(w => w.length > 0 && !/^\d+$/.test(w) && !NOISE_WORDS.has(w));
+}
+
+// Every significant word from each BSD team name must appear somewhere in the
+// Betfair market name. Falls back to the original exact-substring check if
+// significantWords yields nothing (e.g. a team name that is only noise tokens).
 function teamsMatchMarket(event, market) {
-  const n = norm(market.eventName);
-  return n.includes(norm(event.homeTeam)) && n.includes(norm(event.awayTeam));
+  const n         = norm(market.eventName);
+  const homeWords = significantWords(event.homeTeam);
+  const awayWords = significantWords(event.awayTeam);
+
+  if (homeWords.length === 0 || awayWords.length === 0) {
+    return n.includes(norm(event.homeTeam)) && n.includes(norm(event.awayTeam));
+  }
+
+  return homeWords.every(w => n.includes(w)) && awayWords.every(w => n.includes(w));
 }
 
 // ── Expected-odds model ───────────────────────────────────────────────────────
@@ -69,10 +97,10 @@ function estimatedOddsAfterGameWon({ runnerName, currentBackOdds, winner, homeTe
 function detectOpportunities(markets, event) {
   const results = [];
 
-  // Debug: log every incoming BSD score event and its normalised team tokens
+  // Debug: log every incoming BSD score event and its significant word tokens
   console.log(
     `[DETECTOR] Event received: "${event.homeTeam} vs ${event.awayTeam}"` +
-    ` | norm: "${norm(event.homeTeam)}" / "${norm(event.awayTeam)}"` +
+    ` | words: [${significantWords(event.homeTeam).join(',')}] / [${significantWords(event.awayTeam).join(',')}]` +
     ` | checking ${markets.length} market(s)`
   );
 
