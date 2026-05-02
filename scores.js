@@ -1,3 +1,4 @@
+require('dotenv').config();
 'use strict';
 // Live score feed — polls The Odds API scores endpoint.
 // Writes events.json so scanner.js can match events to Betfair markets.

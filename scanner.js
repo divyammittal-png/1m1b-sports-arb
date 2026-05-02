@@ -1,3 +1,4 @@
+require('dotenv').config();
 'use strict';
 // Main trading process.
 // Loop A (30s): listMarketCatalogue — find all in-play MATCH_ODDS markets.
