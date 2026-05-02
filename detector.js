@@ -7,7 +7,11 @@ const MIN_EDGE_PCT = parseFloat(process.env.MIN_EDGE_PCT || '2.0');
 
 // ── Team name normaliser ──────────────────────────────────────────────────────
 function norm(s) {
-  return (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')                 // é → e + combining acute, ñ → n + combining tilde, etc.
+    .replace(/[̀-ͯ]/g, '') // strip combining diacritical marks
+    .replace(/[^a-z0-9]/g, '');
 }
 
 // Club-type tokens and connectors that carry no identifying information.
