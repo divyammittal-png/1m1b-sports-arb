@@ -145,12 +145,29 @@ async function refreshOdds() {
     return;
   }
 
-  if (!Array.isArray(books)) return;
+  if (!Array.isArray(books)) {
+    console.warn('[SCAN] listMarketBook returned non-array:', typeof books, JSON.stringify(books)?.slice(0, 200));
+    return;
+  }
+
+  // Debug: log the field names on the first book so we can spot API shape surprises
+  if (books.length > 0) {
+    const sample = books[0];
+    const firstRunner = sample.runners?.[0];
+    console.log(
+      `[SCAN] Odds response: ${books.length} book(s)` +
+      ` | first book keys: [${Object.keys(sample).join(',')}]` +
+      ` | marketId: ${sample.marketId ?? '(missing)'}` +
+      ` | first runner backOdds: ${firstRunner?.ex?.availableToBack?.[0]?.price ?? '(none)'}`
+    );
+  }
 
   const now = new Date().toISOString();
+  let oddsPopulated = 0;
 
   for (const book of books) {
-    const market = markets.find(m => m.marketId === book.id);
+    // Betfair returns marketId (not id) on MarketBook objects
+    const market = markets.find(m => m.marketId === book.marketId);
     if (!market) continue;
 
     market.status      = book.status;
@@ -164,6 +181,7 @@ async function refreshOdds() {
       runner.status   = bkRunner.status;
       runner.backOdds = bkRunner.ex?.availableToBack?.[0]?.price ?? null;
       runner.layOdds  = bkRunner.ex?.availableToLay?.[0]?.price  ?? null;
+      if (runner.backOdds) oddsPopulated++;
     }
 
     // Keep last 60s of odds snapshots (30 entries at 2s interval)
@@ -174,6 +192,7 @@ async function refreshOdds() {
     executor.updateMarketOdds(market.marketId, market.runners.filter(r => r.backOdds));
   }
 
+  console.log(`[SCAN] Odds updated: ${oddsPopulated} runner price(s) across ${books.length} market(s)`);
   saveMarketsFile();
   runDetector();
 }
