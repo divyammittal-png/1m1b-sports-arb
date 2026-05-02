@@ -69,8 +69,30 @@ function estimatedOddsAfterGameWon({ runnerName, currentBackOdds, winner, homeTe
 function detectOpportunities(markets, event) {
   const results = [];
 
+  // Debug: log every incoming BSD score event and its normalised team tokens
+  console.log(
+    `[DETECTOR] Event received: "${event.homeTeam} vs ${event.awayTeam}"` +
+    ` | norm: "${norm(event.homeTeam)}" / "${norm(event.awayTeam)}"` +
+    ` | checking ${markets.length} market(s)`
+  );
+
+  let matchedMarkets = 0;
   for (const market of markets) {
-    if (!teamsMatchMarket(event, market)) continue;
+    if (!teamsMatchMarket(event, market)) {
+      // Log the first few misses so name-format differences are visible
+      if (matchedMarkets === 0 && markets.indexOf(market) < 5) {
+        console.log(
+          `[DETECTOR]   no match — market "${market.eventName}"` +
+          ` (norm: "${norm(market.eventName)}")`
+        );
+      }
+      continue;
+    }
+
+    matchedMarkets++;
+    console.log(
+      `[DETECTOR]   MATCHED market "${market.eventName}" (${market.marketId})`
+    );
 
     for (const runner of (market.runners || [])) {
       const currentBackOdds = runner.backOdds;
@@ -120,6 +142,15 @@ function detectOpportunities(markets, event) {
         status:        'OPEN',
       });
     }
+  }
+
+  if (matchedMarkets === 0) {
+    console.log(
+      `[DETECTOR]   no Betfair market matched — ` +
+      `BSD names may differ from Betfair names (e.g. "Bayer 04 Leverkusen" vs "Bayer Leverkusen")`
+    );
+  } else {
+    console.log(`[DETECTOR]   ${results.length} opportunity(ies) found across ${matchedMarkets} matched market(s)`);
   }
 
   return results;
