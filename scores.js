@@ -2,18 +2,26 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '.env') });
 // Live score feed — polls BSD (Bzzoiro Sports Data) API.
 // Writes events.json so scanner.js can match events to Betfair markets.
-// Override poll interval with SCORES_POLL_MS env var.
+//
+// Two poll rates:
+//   FAST (default 30s)  — 1st_half and 2nd_half: goals can occur any time
+//   SLOW (default 300s) — halftime: scores frozen, conserves API quota
+// Override with SCORES_FAST_POLL_MS / SCORES_SLOW_POLL_MS env vars.
 
 const https  = require('https');
 const { load, save } = require('./storage');
 
-const BSD_API_KEY = process.env.BSD_API_KEY || 'bde3b2bf7c4d878851b97c2c1393e1b454a86c3f';
-const POLL_MS     = parseInt(process.env.SCORES_POLL_MS || '300000', 10); // 5 min default
-const DISABLED    = process.env.SCORES_DISABLED === 'true';
+const BSD_API_KEY   = process.env.BSD_API_KEY || 'bde3b2bf7c4d878851b97c2c1393e1b454a86c3f';
+const FAST_POLL_MS  = parseInt(process.env.SCORES_FAST_POLL_MS || '30000',  10);
+const SLOW_POLL_MS  = parseInt(process.env.SCORES_SLOW_POLL_MS || '300000', 10);
+const DISABLED      = process.env.SCORES_DISABLED === 'true';
 
-const BSD_BASE    = 'https://sports.bzzoiro.com/api';
-// BSD status values for in-play matches
-const LIVE_STATUSES = ['1st_half', '2nd_half', 'halftime'];
+const BSD_BASE = 'https://sports.bzzoiro.com/api';
+
+// Statuses where goals can happen — polled at the fast rate
+const FAST_STATUSES = ['1st_half', '2nd_half'];
+// Statuses where scores are frozen — polled at the slow rate to save quota
+const SLOW_STATUSES = ['halftime'];
 
 // Previous score snapshot per event id
 const prevScores  = {};
@@ -55,10 +63,10 @@ async function fetchAllPages(url) {
   return results;
 }
 
-// Fetches all in-play events across all live status values.
-async function fetchLiveEvents() {
+// Fetches events for the given BSD status values.
+async function fetchLiveEvents(statuses) {
   const all = [];
-  for (const status of LIVE_STATUSES) {
+  for (const status of statuses) {
     const events = await fetchAllPages(`${BSD_BASE}/events/?status=${status}&limit=50`);
     all.push(...events);
   }
@@ -93,13 +101,13 @@ function detectGoals(event) {
   return detected;
 }
 
-// ── Main poll ─────────────────────────────────────────────────────────────────
-async function poll() {
+// ── Poll ──────────────────────────────────────────────────────────────────────
+async function poll(statuses) {
   let liveEvents;
   try {
-    liveEvents = await fetchLiveEvents();
+    liveEvents = await fetchLiveEvents(statuses);
   } catch (e) {
-    console.warn(`[SCORES] Fetch error: ${e.message}`);
+    console.warn(`[SCORES] Fetch error (${statuses.join(',')}): ${e.message}`);
     return;
   }
 
@@ -121,7 +129,7 @@ async function poll() {
     }
   }
 
-  console.log(`[SCORES] Poll complete — ${liveEvents.length} live match(es), ${results.length} new goal(s)`);
+  console.log(`[SCORES] Poll (${statuses.join(',')}) — ${liveEvents.length} match(es), ${results.length} new goal(s)`);
 
   if (results.length === 0) return;
 
@@ -135,9 +143,16 @@ async function poll() {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 if (!DISABLED) {
-  console.log(`[SCORES] Starting — BSD live scores, polling every ${POLL_MS / 1000}s`);
-  poll();
-  setInterval(poll, POLL_MS);
+  console.log(`[SCORES] Starting — fast poll ${FAST_POLL_MS / 1000}s (1st/2nd half) | slow poll ${SLOW_POLL_MS / 1000}s (halftime)`);
+
+  poll(FAST_STATUSES);
+  setInterval(() => poll(FAST_STATUSES), FAST_POLL_MS);
+
+  // Stagger slow poll by 5s to avoid simultaneous API bursts on startup
+  setTimeout(() => {
+    poll(SLOW_STATUSES);
+    setInterval(() => poll(SLOW_STATUSES), SLOW_POLL_MS);
+  }, 5000);
 } else {
   console.log('[SCORES] Disabled via SCORES_DISABLED=true');
 }
