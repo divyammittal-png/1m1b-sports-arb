@@ -145,22 +145,7 @@ async function refreshOdds() {
     return;
   }
 
-  if (!Array.isArray(books)) {
-    console.warn('[SCAN] listMarketBook returned non-array:', typeof books, JSON.stringify(books)?.slice(0, 200));
-    return;
-  }
-
-  // Debug: log the field names on the first book so we can spot API shape surprises
-  if (books.length > 0) {
-    const sample = books[0];
-    const firstRunner = sample.runners?.[0];
-    console.log(
-      `[SCAN] Odds response: ${books.length} book(s)` +
-      ` | first book keys: [${Object.keys(sample).join(',')}]` +
-      ` | marketId: ${sample.marketId ?? '(missing)'}` +
-      ` | first runner backOdds: ${firstRunner?.ex?.availableToBack?.[0]?.price ?? '(none)'}`
-    );
-  }
+  if (!Array.isArray(books)) return;
 
   const now = new Date().toISOString();
   let oddsPopulated = 0;
@@ -192,7 +177,6 @@ async function refreshOdds() {
     executor.updateMarketOdds(market.marketId, market.runners.filter(r => r.backOdds));
   }
 
-  console.log(`[SCAN] Odds updated: ${oddsPopulated} runner price(s) across ${books.length} market(s)`);
   saveMarketsFile();
   runDetector();
 }
