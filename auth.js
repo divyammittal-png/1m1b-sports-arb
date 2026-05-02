@@ -56,14 +56,14 @@ async function login() {
         console.log(`[AUTH] Raw response: ${body.slice(0, 500)}`);
         try {
           const j = JSON.parse(body);
-          console.log(`[AUTH] status="${j.status}" error="${j.error || ''}" token=${j.token ? j.token.slice(0, 8) + '…' : 'NONE'}`);
-          if (j.status === 'SUCCESS' && j.token) {
-            session.token      = j.token;
+          console.log(`[AUTH] status="${j.loginStatus}" error="${j.error || ''}" token=${j.sessionToken ? j.sessionToken.slice(0, 8) + '…' : 'NONE'}`);
+          if (j.loginStatus === 'SUCCESS' && j.sessionToken) {
+            session.token      = j.sessionToken;
             session.loggedInAt = Date.now();
             console.log('[AUTH] Betfair cert login OK');
             resolve(true);
           } else {
-            console.error('[AUTH] Login failed — status:', j.status, '| error:', j.error);
+            console.error('[AUTH] Login failed — status:', j.loginStatus, '| error:', j.error);
             if (j.error === 'CERTIFICATE_ERROR') {
               console.error('[AUTH] Certificate not registered — upload client-2048.crt at:');
               console.error('[AUTH] https://developer.betfair.com → My API Access → SSL Certificates');
