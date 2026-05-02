@@ -20,6 +20,11 @@ const latestOdds = {};  // marketId -> { selectionId -> { backOdds, layOdds } }
 // Active paper positions (in-memory + persisted to positions.json)
 const positions = [];
 
+// Dedup guard: tracks every (market, selection, trigger) triple that has already
+// opened a trade. Key = marketId + selectionId + trigger (trigger encodes match,
+// score, and minute, so the same goal cannot fire twice for the same runner).
+const firedKeys = new Set();
+
 // ── Bankroll ──────────────────────────────────────────────────────────────────
 function getBankroll() {
   const state = load('state.json') || {};
@@ -62,6 +67,15 @@ function simulateFill(_opportunity) {
 
 // ── Open a new paper position ─────────────────────────────────────────────────
 function openPosition(opportunity) {
+  const dedupKey = `${opportunity.marketId}-${opportunity.selectionId}-${opportunity.trigger}`;
+  if (firedKeys.has(dedupKey)) {
+    console.log(`[EXEC] Duplicate skipped — already traded: ${opportunity.trigger}`);
+    return;
+  }
+  firedKeys.add(dedupKey);
+  // Bound memory: evict oldest entry once set grows large
+  if (firedKeys.size > 10000) firedKeys.delete(firedKeys.values().next().value);
+
   if (positions.filter(p => p.status === 'OPEN').length >= MAX_POSITIONS) {
     console.log('[EXEC] Max positions reached — skipping');
     return;
