@@ -1,5 +1,5 @@
-require('dotenv').config();
 'use strict';
+require('dotenv').config({ path: require('path').resolve(__dirname, '.env') });
 // Live score feed — polls The Odds API scores endpoint.
 // Writes events.json so scanner.js can match events to Betfair markets.
 // Free tier: 500 req/month. Default poll: every 5 minutes per sport key.
@@ -8,7 +8,8 @@ require('dotenv').config();
 const https  = require('https');
 const { load, save } = require('./storage');
 
-const ODDS_API_KEY  = process.env.ODDS_API_KEY || 'b88ef03b398dd998a6b6bfdac976a7d2';
+const ODDS_API_KEY  = process.env.ODDS_API_KEY;
+if (!ODDS_API_KEY) throw new Error('[SCORES] ODDS_API_KEY env var is not set');
 const POLL_MS       = parseInt(process.env.SCORES_POLL_MS || '300000', 10); // 5 min default
 const DISABLED      = process.env.SCORES_DISABLED === 'true';
 
