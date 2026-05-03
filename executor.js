@@ -8,7 +8,7 @@ const { load, save } = require('./storage');
 
 const STARTING_BANKROLL = 1000;
 const KELLY_FRACTION    = 0.25;
-const MAX_STAKE         = 50;
+const MAX_STAKE         = 2.50;
 const MAX_BANKROLL_PCT  = 0.05;
 const MAX_POSITIONS     = 3;
 const POSITION_TTL_MS   = 30_000;  // close after 30s if target not reached
@@ -145,7 +145,14 @@ function monitorPositions() {
     const mkt  = latestOdds[pos.marketId] || {};
     const odds = mkt[pos.selectionId];
     const currentBack = odds?.backOdds || pos.backOdds;
-    const currentLay  = odds?.layOdds  || pos.backOdds;
+    const currentLay  = odds?.layOdds ?? 0;
+
+    // No valid lay quote (missing, zero, or illiquid >50) — cancel immediately
+    if (currentLay <= 0 || currentLay > 50) {
+      console.log(`[EXEC] No valid lay price for ${pos.runnerName} — cancelling position`);
+      closePosition(pos, 'NO_LAY_PRICE', pos.backOdds);
+      continue;
+    }
 
     pos.currentOdds = currentBack;
     pos.currentPnl  = +calcPnl(pos.stake, pos.backOdds, currentLay).toFixed(2);
