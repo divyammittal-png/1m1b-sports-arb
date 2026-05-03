@@ -76,6 +76,13 @@ function openPosition(opportunity) {
   // Bound memory: evict oldest entry once set grows large
   if (firedKeys.size > 10000) firedKeys.delete(firedKeys.values().next().value);
 
+  // Back odds must still be above expected post-goal odds at placement time.
+  // If they've already moved to or below target the trade has no edge left.
+  if (opportunity.currentOdds <= opportunity.targetLayOdds) {
+    console.log(`[EXEC] Stale opportunity — back odds already at/below expected (${opportunity.currentOdds} <= ${opportunity.targetLayOdds})`);
+    return;
+  }
+
   if (positions.filter(p => p.status === 'OPEN').length >= MAX_POSITIONS) {
     console.log('[EXEC] Max positions reached — skipping');
     return;
@@ -123,6 +130,9 @@ function closePosition(pos, reason, layOdds) {
   pos.holdTimeSec = +(pos.holdTimeMs / 1000).toFixed(1);
   pos.pnl       = +calcPnl(pos.stake, pos.backOdds, pos.layOdds).toFixed(2);
   pos.result    = pos.pnl > 0 ? 'WIN' : 'LOSS';
+  // Realised edge: how much did the odds actually move in our favour?
+  // Positive = lay came in below back (profit); negative = moved against us.
+  pos.realisedEdgePct = +((pos.backOdds - pos.layOdds) / pos.backOdds * 100).toFixed(2);
 
   updateBankroll(pos.pnl);
 
@@ -132,7 +142,7 @@ function closePosition(pos, reason, layOdds) {
   save('trades.json', trades.slice(0, 1000));
 
   savePositions();
-  console.log(`[EXEC] Closed ${pos.id.slice(-6)}: ${pos.result} | lay @ ${pos.layOdds} | hold ${pos.holdTimeSec}s | P&L £${pos.pnl > 0 ? '+' : ''}${pos.pnl}`);
+  console.log(`[EXEC] Closed ${pos.id.slice(-6)}: ${pos.result} | back ${pos.backOdds} → lay ${pos.layOdds} | edge ${pos.realisedEdgePct > 0 ? '+' : ''}${pos.realisedEdgePct}% | hold ${pos.holdTimeSec}s | P&L £${pos.pnl > 0 ? '+' : ''}${pos.pnl}`);
 }
 
 // ── Position monitor (runs every 500ms) ───────────────────────────────────────
