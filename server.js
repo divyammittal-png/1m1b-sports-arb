@@ -122,6 +122,22 @@ tr:last-child td{border-bottom:none}
     <div class="stat"><div class="stat-label">Avg Hold</div><div class="stat-value" id="s-avg-hold">—</div></div>
   </div>
 
+  <div class="card">
+    <div class="card-title">P&amp;L Breakdown</div>
+    <div id="breakdown-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">P&amp;L by Sport</div>
+      <div id="sport-body"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">P&amp;L by Event Type</div>
+      <div id="type-body"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
   <div class="grid2">
     <div>
 
@@ -151,21 +167,6 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 
-  <div class="card">
-    <div class="card-title">P&amp;L Breakdown</div>
-    <div id="breakdown-body"><div class="empty">Loading…</div></div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">P&amp;L by Sport</div>
-      <div id="sport-body"><div class="empty">Loading…</div></div>
-    </div>
-    <div class="card">
-      <div class="card-title">P&amp;L by Event Type</div>
-      <div id="type-body"><div class="empty">Loading…</div></div>
-    </div>
-  </div>
 
 </div>
 
