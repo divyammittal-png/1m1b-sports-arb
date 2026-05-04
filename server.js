@@ -13,6 +13,43 @@ app.get('/api/markets',       (_q, r) => r.json(load('markets.json')       || []
 app.get('/api/opportunities', (_q, r) => r.json((load('opportunities.json') || []).filter(o => o.status === 'OPEN').slice(0, 20)));
 app.get('/api/positions',     (_q, r) => r.json(load('positions.json')      || []));
 app.get('/api/trades',        (_q, r) => r.json((load('trades.json')        || []).slice(0, 100)));
+app.get('/api/pnl-breakdown', (_q, r) => r.json(computePnlBreakdown()));
+
+function computePnlBreakdown() {
+  const trades = load('trades.json') || [];
+  const now    = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const monthStr = now.toISOString().slice(0, 7);
+  const diffToMon = now.getDay() === 0 ? -6 : 1 - now.getDay();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() + diffToMon);
+  weekStart.setHours(0, 0, 0, 0);
+
+  function summarise(subset) {
+    const wins = subset.filter(t => t.result === 'WIN').length;
+    const pnl  = +subset.reduce((s, t) => s + (t.pnl || 0), 0).toFixed(2);
+    return { trades: subset.length, wins, winRate: subset.length ? +(wins / subset.length * 100).toFixed(1) : null, pnl };
+  }
+
+  const bySport = {}, byType = {};
+  for (const t of trades) {
+    const s = t.sport || 'Unknown';
+    const y = (t.trigger || 'Unknown').split(':')[0].trim();
+    (bySport[s] = bySport[s] || []).push(t);
+    (byType[y]  = byType[y]  || []).push(t);
+  }
+
+  return {
+    periods: [
+      { period: 'Today',        ...summarise(trades.filter(t => (t.closedAt || '').startsWith(todayStr))) },
+      { period: 'This Week',    ...summarise(trades.filter(t => t.closedAt && new Date(t.closedAt) >= weekStart)) },
+      { period: 'This Month',   ...summarise(trades.filter(t => (t.closedAt || '').startsWith(monthStr))) },
+      { period: 'Life-to-Date', ...summarise(trades) },
+    ],
+    bySport: Object.entries(bySport).map(([sport, ts]) => ({ sport, ...summarise(ts) })),
+    byType:  Object.entries(byType).map(([type,  ts]) => ({ type,  ...summarise(ts) })),
+  };
+}
 
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
 app.get('/', (_q, res) => res.send(html()));
@@ -24,7 +61,6 @@ return `<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>1M1B Quant — Betfair In-Play</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a202c;font-size:14px}
@@ -59,14 +95,12 @@ tr:last-child td{border-bottom:none}
 .opp-flash td{animation:flash 1s ease}
 @keyframes flash{0%{background:#f0fff4}100%{background:transparent}}
 .grid2{display:grid;grid-template-columns:2fr 1fr;gap:14px}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
-.chart-wrap{padding:14px;height:200px}
 .empty{text-align:center;padding:24px;color:#a0aec0;font-size:13px}
 .live-dot{width:8px;height:8px;border-radius:50%;background:#48bb78;display:inline-block;animation:pulse 2s infinite}
 .odds-cell{font-weight:700;font-size:13px}
 .back-odds{color:#276749}
 .lay-odds{color:#c53030}
-@media(max-width:700px){.grid2,.grid3{grid-template-columns:1fr}}
+@media(max-width:700px){.grid2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -117,26 +151,25 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 
-  <div class="grid3">
+  <div class="card">
+    <div class="card-title">P&amp;L Breakdown</div>
+    <div id="breakdown-body"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="grid2">
     <div class="card">
-      <div class="card-title">Bankroll History</div>
-      <div class="chart-wrap"><canvas id="ch-bankroll"></canvas></div>
+      <div class="card-title">P&amp;L by Sport</div>
+      <div id="sport-body"><div class="empty">Loading…</div></div>
     </div>
     <div class="card">
-      <div class="card-title">Win Rate by Sport</div>
-      <div class="chart-wrap"><canvas id="ch-sport"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-title">P&L by Event Type</div>
-      <div class="chart-wrap"><canvas id="ch-trigger"></canvas></div>
+      <div class="card-title">P&amp;L by Event Type</div>
+      <div id="type-body"><div class="empty">Loading…</div></div>
     </div>
   </div>
 
 </div>
 
 <script>
-var charts = {};
-
 // ── Formatters ────────────────────────────────────────────────────────────────
 function fmtPound(n) { return n == null ? '—' : (n >= 0 ? '£' : '-£') + Math.abs(n).toFixed(2); }
 function fmtPct(n)   { return n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(1) + '%'; }
@@ -259,68 +292,69 @@ function renderMarkets(markets) {
   el.innerHTML = '<table><thead><tr><th>Event</th><th>Sport</th><th>Sel 1</th><th>Sel 2</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
-// ── Charts ────────────────────────────────────────────────────────────────────
-function renderBankrollChart(history) {
-  var ctx = document.getElementById('ch-bankroll').getContext('2d');
-  if (charts.bankroll) charts.bankroll.destroy();
-  charts.bankroll = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: history.map(function(h) { return fmtTime(h.ts); }),
-      datasets: [{ label: 'Bankroll', data: history.map(function(h) { return h.bankroll; }),
-        borderColor: '#48bb78', backgroundColor: 'rgba(72,187,120,.08)',
-        borderWidth: 2, pointRadius: 1, tension: 0.3, fill: true }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { x: { ticks: { maxTicksLimit: 5, font: { size: 10 } } },
-                y: { ticks: { font: { size: 10 }, callback: function(v) { return '£' + v; } } } } }
-  });
+// ── P&L Breakdown tables ──────────────────────────────────────────────────────
+function fmtWinRate(r) { return r == null ? '—' : r + '%'; }
+function fmtPnlCell(n) {
+  if (n == null) return '—';
+  var cls = n >= 0 ? 'green' : 'red';
+  return '<span class="' + cls + '" style="font-weight:700">' + (n >= 0 ? '+' : '') + '£' + Math.abs(n).toFixed(2) + '</span>';
 }
 
-function renderSportChart(bySport) {
-  var ctx    = document.getElementById('ch-sport').getContext('2d');
-  var labels = Object.keys(bySport);
-  var data   = labels.map(function(k) { return bySport[k].winRate || 0; });
-  if (charts.sport) charts.sport.destroy();
-  charts.sport = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{ label: 'Win %', data: data, backgroundColor: '#3182ce88', borderColor: '#3182ce', borderWidth: 1 }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { y: { min: 0, max: 100, ticks: { callback: function(v) { return v + '%'; }, font: { size: 10 } } },
-                x: { ticks: { font: { size: 10 } } } } }
-  });
-}
+function renderBreakdown(data) {
+  var el = document.getElementById('breakdown-body');
+  if (!data || !data.periods) return;
+  var rows = data.periods.map(function(p) {
+    return '<tr>' +
+      '<td style="font-weight:600">' + p.period + '</td>' +
+      '<td>' + p.trades + '</td>' +
+      '<td>' + p.wins + '</td>' +
+      '<td>' + fmtWinRate(p.winRate) + '</td>' +
+      '<td>' + fmtPnlCell(p.pnl) + '</td>' +
+    '</tr>';
+  }).join('');
+  el.innerHTML = '<table><thead><tr><th>Period</th><th>Trades</th><th>Wins</th><th>Win Rate</th><th>P&amp;L</th></tr></thead><tbody>' + rows + '</tbody></table>';
 
-function renderTriggerChart(byTrigger) {
-  var ctx    = document.getElementById('ch-trigger').getContext('2d');
-  var labels = Object.keys(byTrigger);
-  var data   = labels.map(function(k) { return byTrigger[k].pnl || 0; });
-  var colors = data.map(function(v) { return v >= 0 ? '#48bb7888' : '#fc8181aa'; });
-  if (charts.trigger) charts.trigger.destroy();
-  charts.trigger = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{ label: 'P&L', data: data, backgroundColor: colors, borderWidth: 0 }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-      scales: { y: { ticks: { callback: function(v) { return '£' + v; }, font: { size: 10 } } },
-                x: { ticks: { font: { size: 10 } } } } }
-  });
+  var sportEl = document.getElementById('sport-body');
+  if (data.bySport && data.bySport.length) {
+    var sRows = data.bySport.map(function(s) {
+      return '<tr>' +
+        '<td>' + sportPill(s.sport) + '</td>' +
+        '<td>' + s.trades + '</td>' +
+        '<td>' + fmtWinRate(s.winRate) + '</td>' +
+        '<td>' + fmtPnlCell(s.pnl) + '</td>' +
+      '</tr>';
+    }).join('');
+    sportEl.innerHTML = '<table><thead><tr><th>Sport</th><th>Trades</th><th>Win Rate</th><th>P&amp;L</th></tr></thead><tbody>' + sRows + '</tbody></table>';
+  } else {
+    sportEl.innerHTML = '<div class="empty">No data yet</div>';
+  }
+
+  var typeEl = document.getElementById('type-body');
+  if (data.byType && data.byType.length) {
+    var tRows = data.byType.map(function(t) {
+      return '<tr>' +
+        '<td style="font-weight:600">' + t.type + '</td>' +
+        '<td>' + t.trades + '</td>' +
+        '<td>' + fmtWinRate(t.winRate) + '</td>' +
+        '<td>' + fmtPnlCell(t.pnl) + '</td>' +
+      '</tr>';
+    }).join('');
+    typeEl.innerHTML = '<table><thead><tr><th>Event Type</th><th>Trades</th><th>Win Rate</th><th>P&amp;L</th></tr></thead><tbody>' + tRows + '</tbody></table>';
+  } else {
+    typeEl.innerHTML = '<div class="empty">No data yet</div>';
+  }
 }
 
 // ── Poll ──────────────────────────────────────────────────────────────────────
 async function refresh() {
   try {
-    var [stats, markets, opps, positions, trades] = await Promise.all([
+    var [stats, markets, opps, positions, trades, breakdown] = await Promise.all([
       fetch('/api/stats').then(function(r) { return r.json(); }),
       fetch('/api/markets').then(function(r) { return r.json(); }),
       fetch('/api/opportunities').then(function(r) { return r.json(); }),
       fetch('/api/positions').then(function(r) { return r.json(); }),
       fetch('/api/trades').then(function(r) { return r.json(); }),
+      fetch('/api/pnl-breakdown').then(function(r) { return r.json(); }),
     ]);
 
     renderStats(stats);
@@ -328,10 +362,7 @@ async function refresh() {
     renderPositions(positions);
     renderTrades(trades);
     renderMarkets(markets);
-
-    if ((stats.bankrollHistory || []).length > 1) renderBankrollChart(stats.bankrollHistory);
-    if (Object.keys(stats.bySport || {}).length)  renderSportChart(stats.bySport);
-    if (Object.keys(stats.byTrigger || {}).length) renderTriggerChart(stats.byTrigger);
+    renderBreakdown(breakdown);
   } catch(e) {
     console.warn('Refresh error:', e);
   }
