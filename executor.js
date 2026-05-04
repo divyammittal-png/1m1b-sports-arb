@@ -83,6 +83,15 @@ function openPosition(opportunity) {
     return;
   }
 
+  // Require at least 2% spread between back and lay at placement time.
+  // If lay/back < 1.02 the market hasn't moved after the goal — no real edge.
+  const placementOdds = (latestOdds[opportunity.marketId] || {})[opportunity.selectionId];
+  const placementLay  = placementOdds?.layOdds;
+  if (placementLay && placementLay / opportunity.currentOdds < 1.02) {
+    console.log(`[EXEC] No movement — lay/back ratio ${(placementLay / opportunity.currentOdds).toFixed(3)} < 1.02 (back ${opportunity.currentOdds}, lay ${placementLay})`);
+    return;
+  }
+
   if (positions.filter(p => p.status === 'OPEN').length >= MAX_POSITIONS) {
     console.log('[EXEC] Max positions reached — skipping');
     return;
