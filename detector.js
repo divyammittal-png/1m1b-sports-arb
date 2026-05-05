@@ -141,12 +141,16 @@ function detectOpportunities(markets, event) {
         const marginBefore = Math.abs(homeBefore - awayBefore);
         const marginAfter  = Math.abs(homeAfter  - awayAfter);
 
-        const isLateGoal      = minute >= 75;
-        const isEqualiser     = marginAfter === 0;
-        const isBigLead       = marginAfter >= 3;
-        const isLateCloseGame = minute > 60 && marginBefore <= 1;
+        // Equaliser: scores were unequal, now level
+        const isEqualiser  = marginBefore > 0 && marginAfter === 0;
+        // First lead: scores were level (0-0 or drawn), now one team leads
+        const isFirstLead  = marginBefore === 0 && marginAfter === 1;
+        // Injury-time goal: minute 85+ regardless of context
+        const isInjuryTime = minute >= 85;
+        // Match over: 3+ goal difference created
+        const isBigLead    = marginAfter >= 3;
 
-        if (!isLateGoal && !isEqualiser && !isBigLead && !isLateCloseGame) continue;
+        if (!isEqualiser && !isFirstLead && !isInjuryTime && !isBigLead) continue;
 
         const scoringTeamName = event.scoringTeam === 'home' ? event.homeTeam : event.awayTeam;
         const scoreDiff = Math.abs((event.homeScore || 0) - (event.awayScore || 0));
