@@ -13,7 +13,9 @@ app.get('/api/markets',       (_q, r) => r.json(load('markets.json')       || []
 app.get('/api/opportunities', (_q, r) => r.json((load('opportunities.json') || []).filter(o => o.status === 'OPEN').slice(0, 20)));
 app.get('/api/positions',     (_q, r) => r.json(load('positions.json')      || []));
 app.get('/api/trades',        (_q, r) => r.json((load('trades.json')        || []).slice(0, 100)));
-app.get('/api/pnl-breakdown', (_q, r) => r.json(computePnlBreakdown()));
+app.get('/api/pnl-breakdown',      (_q, r) => r.json(computePnlBreakdown()));
+app.get('/api/horse-opportunities', (_q, r) => r.json((load('horse-opportunities.json') || []).filter(o => o.status === 'OPEN').slice(0, 30)));
+app.get('/api/horseracing-trades',  (_q, r) => r.json((load('horseracing-trades.json')  || []).slice(0, 50)));
 
 function computePnlBreakdown() {
   const trades = load('trades.json') || [];
@@ -167,6 +169,15 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 
+  <div class="card" style="margin-top:16px">
+    <div class="card-title" style="background:#2d3748;color:#fff">🏇 Horse Racing Opportunities <span class="count-badge" id="horse-opps-count" style="background:#4a5568;color:#e2e8f0">0</span></div>
+    <div id="horse-opps-body"><div class="empty">Waiting for horse racing movers…</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Horse Racing Trades <span class="count-badge" id="horse-trades-count">0</span></div>
+    <div id="horse-trades-body"><div class="empty">No horse racing trades yet</div></div>
+  </div>
 
 </div>
 
@@ -347,16 +358,56 @@ function renderBreakdown(data) {
   }
 }
 
+// ── Horse racing renderers ────────────────────────────────────────────────────
+function renderHorseOpps(opps) {
+  setText('horse-opps-count', opps.length);
+  var el = document.getElementById('horse-opps-body');
+  if (!opps.length) { el.innerHTML = '<div class="empty">No movers detected yet — horseracing.js must be running</div>'; return; }
+  var rows = opps.map(function(o) {
+    var cls = o.changePct >= 25 ? 'p-green' : o.changePct >= 15 ? 'p-yellow' : 'p-gray';
+    return '<tr>' +
+      '<td style="color:#718096;font-size:12px">' + fmtTime(o.detectedAt) + '</td>' +
+      '<td style="font-size:12px">' + (o.eventName || '—') + '</td>' +
+      '<td style="font-weight:700">' + (o.horseName || '—') + '</td>' +
+      '<td class="odds-cell" style="color:#718096;text-decoration:line-through">' + o.prevOdds + '</td>' +
+      '<td class="odds-cell back-odds">' + o.currentOdds + '</td>' +
+      '<td>' + pill('-' + o.changePct + '%', cls) + '</td>' +
+    '</tr>';
+  }).join('');
+  el.innerHTML = '<table><thead><tr><th>Time</th><th>Race</th><th>Horse</th><th>Prev</th><th>Now</th><th>Move</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function renderHorseTrades(trades) {
+  setText('horse-trades-count', trades.length);
+  var el = document.getElementById('horse-trades-body');
+  if (!trades.length) { el.innerHTML = '<div class="empty">No horse racing trades yet</div>'; return; }
+  var rows = trades.slice(0, 30).map(function(t) {
+    var pnlCol = pnlColor(t.pnl || 0);
+    return '<tr>' +
+      '<td style="color:#718096;font-size:12px">' + fmtDateTime(t.closedAt) + '</td>' +
+      '<td style="font-size:12px">' + (t.eventName || '—') + '</td>' +
+      '<td style="font-weight:700">' + (t.horseName || '—') + '</td>' +
+      '<td class="odds-cell back-odds">' + t.backOdds + '</td>' +
+      '<td class="odds-cell">' + (t.layOdds || '—') + '</td>' +
+      '<td style="font-weight:700;color:' + pnlCol + '">' + (t.pnl >= 0 ? '+' : '') + '£' + Number(t.pnl || 0).toFixed(2) + '</td>' +
+      '<td>' + resultPill(t.result) + '</td>' +
+    '</tr>';
+  }).join('');
+  el.innerHTML = '<table><thead><tr><th>Time</th><th>Race</th><th>Horse</th><th>Back</th><th>Lay</th><th>P&amp;L</th><th>Result</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
 // ── Poll ──────────────────────────────────────────────────────────────────────
 async function refresh() {
   try {
-    var [stats, markets, opps, positions, trades, breakdown] = await Promise.all([
+    var [stats, markets, opps, positions, trades, breakdown, horseOpps, horseTrades] = await Promise.all([
       fetch('/api/stats').then(function(r) { return r.json(); }),
       fetch('/api/markets').then(function(r) { return r.json(); }),
       fetch('/api/opportunities').then(function(r) { return r.json(); }),
       fetch('/api/positions').then(function(r) { return r.json(); }),
       fetch('/api/trades').then(function(r) { return r.json(); }),
       fetch('/api/pnl-breakdown').then(function(r) { return r.json(); }),
+      fetch('/api/horse-opportunities').then(function(r) { return r.json(); }),
+      fetch('/api/horseracing-trades').then(function(r) { return r.json(); }),
     ]);
 
     renderStats(stats);
@@ -365,6 +416,8 @@ async function refresh() {
     renderTrades(trades);
     renderMarkets(markets);
     renderBreakdown(breakdown);
+    renderHorseOpps(horseOpps);
+    renderHorseTrades(horseTrades);
   } catch(e) {
     console.warn('Refresh error:', e);
   }
