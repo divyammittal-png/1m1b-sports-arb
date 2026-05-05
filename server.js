@@ -175,6 +175,7 @@ tr:last-child td{border-bottom:none}
 function fmtPound(n) { return n == null ? '—' : (n >= 0 ? '£' : '-£') + Math.abs(n).toFixed(2); }
 function fmtPct(n)   { return n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(1) + '%'; }
 function fmtTime(ts) { return ts ? new Date(ts).toLocaleTimeString() : '—'; }
+function fmtDateTime(ts) { if (!ts) return '—'; var d = new Date(ts); return d.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' ' + d.toLocaleTimeString(); }
 function fmtSec(s)   { return s == null ? '—' : Number(s).toFixed(0) + 's'; }
 
 function pill(txt, cls) { return '<span class="pill ' + cls + '">' + txt + '</span>'; }
@@ -255,7 +256,7 @@ function renderTrades(trades) {
   var rows = trades.slice(0, 50).map(function(t) {
     var pnlCol = pnlColor(t.pnl || 0);
     return '<tr>' +
-      '<td style="color:#718096;font-size:12px">' + fmtTime(t.closedAt) + '</td>' +
+      '<td style="color:#718096;font-size:12px">' + fmtDateTime(t.closedAt) + '</td>' +
       '<td>' + (t.eventName || t.event || '—') + '</td>' +
       '<td>' + sportPill(t.sport) + '</td>' +
       '<td style="font-size:12px;max-width:120px;overflow:hidden">' + (t.trigger || '—') + '</td>' +
