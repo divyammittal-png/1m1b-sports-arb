@@ -133,6 +133,9 @@ function detectOpportunities(markets, event) {
       let expectedOdds;
 
       if (event.type === 'GOAL') {
+        // Late-game filter: only trade goals from minute 75 onwards
+        if ((event.minute || 0) < 75) continue;
+
         const scoringTeamName = event.scoringTeam === 'home' ? event.homeTeam : event.awayTeam;
         const scoreDiff = Math.abs((event.homeScore || 0) - (event.awayScore || 0));
         expectedOdds = estimatedOddsAfterGoal({
