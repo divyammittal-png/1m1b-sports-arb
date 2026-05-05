@@ -11,8 +11,8 @@ const KELLY_FRACTION    = 0.25;
 const MAX_STAKE         = 2.50;
 const MAX_BANKROLL_PCT  = 0.05;
 const MAX_POSITIONS     = 3;
-const POSITION_TTL_MS   = 30_000;  // close after 30s if target not reached
-const MONITOR_MS        = 500;
+const POSITION_TTL_MS   = 45_000;  // time stop at 45s
+const MONITOR_MS        = 1_000;   // check every second
 
 // In-memory latest odds — updated by scanner every 2s
 const latestOdds = {};  // marketId -> { selectionId -> { backOdds, layOdds } }
@@ -176,21 +176,22 @@ function monitorPositions() {
     pos.currentOdds = currentBack;
     pos.currentPnl  = +calcPnl(pos.stake, pos.backOdds, currentLay).toFixed(2);
 
-    // Target reached: lay odds have dropped to or below target
-    if (currentBack <= pos.targetLayOdds) {
-      closePosition(pos, 'TARGET_REACHED', currentLay);
+    // Lay floor: odds collapsed to near-certainty — ride full collapse, exit here
+    if (currentLay < 1.10) {
+      closePosition(pos, 'LAY_FLOOR', currentLay);
       continue;
     }
 
-    // Timeout
+    // Stop-loss: lay odds drifted 15% above original back odds — cut loss
+    if (currentLay > pos.backOdds * 1.15) {
+      closePosition(pos, 'STOP_LOSS', currentLay);
+      continue;
+    }
+
+    // Time stop: 45 seconds elapsed
     if (now >= new Date(pos.expiresAt).getTime()) {
       closePosition(pos, 'TIMEOUT', currentLay);
       continue;
-    }
-
-    // Stop-loss: odds moved 15% above entry (position going wrong)
-    if (currentBack > pos.backOdds * 1.15) {
-      closePosition(pos, 'STOP_LOSS', currentLay);
     }
   }
 
