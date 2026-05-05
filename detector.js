@@ -133,8 +133,20 @@ function detectOpportunities(markets, event) {
       let expectedOdds;
 
       if (event.type === 'GOAL') {
-        // Late-game filter: only trade goals from minute 75 onwards
-        if ((event.minute || 0) < 75) continue;
+        const minute       = event.minute || 0;
+        const homeAfter    = event.homeScore || 0;
+        const awayAfter    = event.awayScore || 0;
+        const homeBefore   = homeAfter - (event.scoringTeam === 'home' ? 1 : 0);
+        const awayBefore   = awayAfter - (event.scoringTeam === 'away' ? 1 : 0);
+        const marginBefore = Math.abs(homeBefore - awayBefore);
+        const marginAfter  = Math.abs(homeAfter  - awayAfter);
+
+        const isLateGoal      = minute >= 75;
+        const isEqualiser     = marginAfter === 0;
+        const isBigLead       = marginAfter >= 3;
+        const isLateCloseGame = minute > 60 && marginBefore <= 1;
+
+        if (!isLateGoal && !isEqualiser && !isBigLead && !isLateCloseGame) continue;
 
         const scoringTeamName = event.scoringTeam === 'home' ? event.homeTeam : event.awayTeam;
         const scoreDiff = Math.abs((event.homeScore || 0) - (event.awayScore || 0));
