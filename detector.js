@@ -128,7 +128,7 @@ function detectOpportunities(markets, event) {
 
     for (const runner of (market.runners || [])) {
       const currentBackOdds = runner.backOdds;
-      if (!currentBackOdds || currentBackOdds < 1.02) continue;
+      if (!currentBackOdds || currentBackOdds < 3.0) continue;
 
       let expectedOdds;
 
