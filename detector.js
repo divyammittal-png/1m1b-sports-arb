@@ -152,6 +152,13 @@ function detectOpportunities(markets, event) {
 
         if (!isEqualiser && !isFirstLead && !isInjuryTime && !isBigLead) continue;
 
+        // Draw runner: only trade when the goal creates a level score (equaliser)
+        const isDraw = runner.runnerName === 'The Draw' || norm(runner.runnerName).includes('draw');
+        if (isDraw && marginAfter !== 0) {
+          console.log(`[DETECTOR] Skipping Draw — not an equaliser (score ${homeAfter}-${awayAfter} at minute ${minute})`);
+          continue;
+        }
+
         const scoringTeamName = event.scoringTeam === 'home' ? event.homeTeam : event.awayTeam;
         const scoreDiff = Math.abs((event.homeScore || 0) - (event.awayScore || 0));
         expectedOdds = estimatedOddsAfterGoal({
